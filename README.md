@@ -36,6 +36,8 @@ thing your OSD's physical buttons do. Lid shut, display asleep, Mac docked — i
 - Menu bar slider per external display
 - Global shortcut `⌃⌥↑` / `⌃⌥↓` — 10% per press
 - Works while the lid is closed, or when the display wakes from sleep
+- **Keep Awake** toggle — stops macOS from sleeping the display or the Mac mid-session
+  (holds a power assertion; no `sudo`, no `pmset` edits)
 - Optional *Open at Login* (uses `SMAppService`, shows up in System Settings ▸ Login Items)
 - Same binary doubles as a CLI for scripts, Alfred, Raycast, Hammerspoon…
 
@@ -60,7 +62,7 @@ Requires macOS 13+ on Apple Silicon and Xcode command line tools.
 ```bash
 git clone https://github.com/LIAB-BB/dimbar.git
 cd dimbar
-./build.sh --dist        # build/DimBar.app + build/DimBar-1.0.0.zip
+./build.sh --dist        # build/DimBar.app + build/DimBar-1.1.0.zip
 open build/DimBar.app
 ```
 
@@ -71,6 +73,7 @@ open build/DimBar.app
 | Set brightness | Click the menu bar icon, drag the slider |
 | Brighter / dimmer | `⌃⌥↑` / `⌃⌥↓` |
 | Multiple monitors | The shortcut targets the display under the mouse pointer |
+| Keep the Mac awake | Menu ▸ *Keep Awake* — the sun icon turns solid while active |
 | Start at login | Menu ▸ *Open at Login* |
 | Quit | Menu ▸ *Quit DimBar* (`⌘Q`) |
 
@@ -109,6 +112,21 @@ to the other variant.
 so pairing them by iteration order breaks with two monitors. They do share a common
 ancestor (the `dispextN` device), so DimBar matches on shared ancestry instead.
 
+## Clamshell mode and sleep
+
+Clamshell mode — lid shut, external display on — only works **on power**. On battery,
+macOS sleeps the Mac as soon as the lid closes, and no app can override that.
+
+Even on power, macOS still applies its idle timers: by default the display turns off
+after a few minutes, and the Mac follows shortly after, which locks the screen. That is
+what usually kills a lid-closed session. Two ways to stop it:
+
+- Set *System Settings ▸ Battery ▸ Options ▸ "Prevent automatic sleeping on power adapter
+  when the display is off"*, or run `sudo pmset -c sleep 0` (system-wide change).
+- Flip **Keep Awake** in DimBar's menu. It holds `PreventUserIdleDisplaySleep` and
+  `PreventUserIdleSystemSleep` assertions for as long as the app runs, needs no `sudo`,
+  and disappears the moment you quit.
+
 ## Limitations
 
 - **Apple Silicon only.** Intel Macs expose DDC through a different I2C path that this
@@ -132,6 +150,8 @@ macOS 只给内置屏做亮度控制。合盖接外接屏之后，F1/F2 找不�
 - 菜单栏太阳图标，点开是滑块；`⌃⌥↑` / `⌃⌥↓` 每次 10%
 - **不需要任何权限**：不用辅助功能、不用输入监控、不用 root、不装内核扩展
 - 合盖、休眠唤醒、拔插后自动重新识别
+- 菜单里的 **Keep Awake**：只在 DimBar 运行时阻止显示器 / 系统休眠，不需要 root，
+  退出即恢复（合盖模式本身只在接电源时有效，电池下合盖必睡）
 - 一个二进制同时是 CLI：`DimBar list` / `get` / `set all 30` / `step all -10`
 
 从 [Releases](../../releases) 下载，或 `./build.sh --dist` 自己编译。首次打开如果被

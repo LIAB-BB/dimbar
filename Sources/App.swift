@@ -5,6 +5,7 @@
 
 import AppKit
 import Carbon.HIToolbox
+import IOKit.pwr_mgt
 import ServiceManagement
 
 
@@ -222,6 +223,74 @@ enum LoginItem {
     }
 }
 
+// MARK: - Keep awake
+//
+// Holds power-management assertions so the Mac and the display stop idling to
+// sleep. Assertions are scoped to this process: quit DimBar (or toggle off) and
+// normal sleep behaviour returns immediately. No root, no pmset changes.
+
+final class AwakeController {
+    private static let preferenceKey = "keepAwake"
+
+    private var assertions: [IOPMAssertionID] = []
+
+    var isActive: Bool { !assertions.isEmpty }
+
+    /// Restores the user's saved preference. Returns true if it is now active.
+    @discardableResult
+    func restorePreference() -> Bool {
+        guard UserDefaults.standard.bool(forKey: Self.preferenceKey) else { return false }
+        return enable()
+    }
+
+    @discardableResult
+    func enable() -> Bool {
+        guard assertions.isEmpty else { return true }
+
+        let types = [
+            kIOPMAssertionTypePreventUserIdleDisplaySleep,
+            kIOPMAssertionTypePreventUserIdleSystemSleep,
+        ]
+        let reason = "DimBar is keeping the display awake" as CFString
+
+        for type in types {
+            var id: IOPMAssertionID = 0
+            let status = IOPMAssertionCreateWithName(type as CFString,
+                                                     IOPMAssertionLevel(kIOPMAssertionLevelOn),
+                                                     reason,
+                                                     &id)
+            if status == kIOReturnSuccess {
+                assertions.append(id)
+            } else {
+                DebugLog.write("keep awake: assertion \(type) failed (\(status))")
+            }
+        }
+
+        UserDefaults.standard.set(isActive, forKey: Self.preferenceKey)
+        DebugLog.write("keep awake: enabled with \(assertions.count) assertion(s)")
+        return isActive
+    }
+
+    func disable() {
+        for id in assertions {
+            IOPMAssertionRelease(id)
+        }
+        assertions.removeAll()
+        UserDefaults.standard.set(false, forKey: Self.preferenceKey)
+        DebugLog.write("keep awake: disabled")
+    }
+
+    @discardableResult
+    func toggle() -> Bool {
+        if isActive {
+            disable()
+        } else {
+            enable()
+        }
+        return isActive
+    }
+}
+
 // MARK: - App delegate
 
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
@@ -238,15 +307,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var refreshScheduled = false
     private var titleResetWorkItem: DispatchWorkItem?
 
+    private let awake = AwakeController()
+
     // MARK: lifecycle
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
 
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        statusItem.button?.image = NSImage(systemSymbolName: "sun.max",
-                                           accessibilityDescription: "DimBar")
-        statusItem.button?.image?.isTemplate = true
+        updateStatusIcon()
 
         let menu = NSMenu()
         menu.delegate = self
@@ -256,6 +325,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             self?.step(delta)
         }
         HotkeyManager.shared.install()
+
+        if awake.restorePreference() {
+            updateStatusIcon()
+        }
 
         CGDisplayRegisterReconfigurationCallback({ _, _, _ in
             DispatchQueue.main.async {
@@ -343,6 +416,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         labels[id]?.stringValue = "\(percent)%"
     }
 
+    /// A filled sun means DimBar is holding the machine awake.
+    private func updateStatusIcon() {
+        let symbol = awake.isActive ? "sun.max.fill" : "sun.max"
+        statusItem.button?.image = NSImage(systemSymbolName: symbol,
+                                           accessibilityDescription: "DimBar")
+        statusItem.button?.image?.isTemplate = true
+    }
+
     private func flashTitle(_ text: String) {
         guard let button = statusItem.button else { return }
         titleResetWorkItem?.cancel()
@@ -401,6 +482,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         down.keyEquivalentModifierMask = [.control, .option]
         down.target = self
         menu.addItem(down)
+
+        let keepAwake = NSMenuItem(title: "Keep Awake", action: #selector(toggleAwake), keyEquivalent: "")
+        keepAwake.state = awake.isActive ? .on : .off
+        keepAwake.target = self
+        keepAwake.toolTip = "Stop macOS from sleeping the display or the Mac while DimBar runs"
+        menu.addItem(keepAwake)
 
         menu.addItem(.separator())
 
@@ -466,10 +553,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc private func toggleLogin() {
         if LoginItem.isEnabled {
-            LoginItem.disable()
+            _ = LoginItem.disable()
         } else {
-            LoginItem.enable()
+            _ = LoginItem.enable()
         }
+    }
+
+    @objc private func toggleAwake() {
+        let active = awake.toggle()
+        updateStatusIcon()
+        flashTitle(active ? "Awake" : "Sleep")
     }
 
     @objc private func quit() {
